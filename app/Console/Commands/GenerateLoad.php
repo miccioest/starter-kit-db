@@ -8,12 +8,14 @@ use App\Models\Notification;
 use App\Models\Post;
 use App\Models\Tag;
 use App\Models\User;
+use Faker\Factory as Faker;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class GenerateLoad extends Command
 {
+    protected \Faker\Generator $fake;
     protected $signature = 'app:generate-load
         {--qps=400 : Target queries per second}
         {--ratio=30 : Read:write ratio (e.g. 30 = 30 reads per 1 write)}
@@ -26,6 +28,7 @@ class GenerateLoad extends Command
 
     public function handle(): int
     {
+        $this->fake = Faker::create();
         $targetQps = (int) $this->option('qps');
         $ratio = (int) $this->option('ratio');
         $duration = (int) $this->option('duration');
@@ -323,9 +326,9 @@ class GenerateLoad extends Command
 
         $post = Post::create([
             'user_id' => $userIds[array_rand($userIds)],
-            'title' => fake()->sentence(rand(4, 10)),
-            'slug' => Str::slug(fake()->sentence()).'-'.Str::random(6),
-            'body' => fake()->paragraphs(rand(2, 5), true),
+            'title' => $this->fake->sentence(rand(4, 10)),
+            'slug' => Str::slug($this->fake->sentence()).'-'.Str::random(6),
+            'body' => $this->fake->paragraphs(rand(2, 5), true),
             'status' => 'published',
             'views_count' => 0,
             'published_at' => now(),
@@ -351,7 +354,7 @@ class GenerateLoad extends Command
         Comment::create([
             'post_id' => $postIds[array_rand($postIds)],
             'user_id' => $userIds[array_rand($userIds)],
-            'body' => fake()->paragraph(rand(1, 3)),
+            'body' => $this->fake->paragraph(rand(1, 3)),
             'is_approved' => true,
         ]);
         $queries++;
@@ -381,8 +384,8 @@ class GenerateLoad extends Command
 
         Notification::create([
             'user_id' => $userIds[array_rand($userIds)],
-            'type' => fake()->randomElement(['comment', 'like', 'follow', 'mention']),
-            'data' => json_encode(['message' => fake()->sentence()]),
+            'type' => $this->fake->randomElement(['comment', 'like', 'follow', 'mention']),
+            'data' => json_encode(['message' => $this->fake->sentence()]),
             'is_read' => false,
         ]);
         $queries++;
@@ -404,10 +407,10 @@ class GenerateLoad extends Command
 
         ActivityLog::create([
             'user_id' => $userIds[array_rand($userIds)],
-            'action' => fake()->randomElement(['created', 'updated', 'viewed']),
+            'action' => $this->fake->randomElement(['created', 'updated', 'viewed']),
             'subject_type' => 'post',
             'subject_id' => $postIds[array_rand($postIds)],
-            'properties' => ['ip' => fake()->ipv4()],
+            'properties' => ['ip' => $this->fake->ipv4()],
         ]);
         $queries++;
 

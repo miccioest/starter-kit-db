@@ -13,9 +13,9 @@ class CommentFactory extends Factory
         return [
             'post_id' => Post::factory(),
             'user_id' => User::factory(),
-            'body' => fake()->paragraph(rand(1, 4)),
-            'is_approved' => fake()->boolean(90),
-            'created_at' => fake()->dateTimeBetween('-1 year'),
+            'body' => $this->faker->paragraph(rand(1, 4)),
+            'is_approved' => $this->faker->boolean(90),
+            'created_at' => $this->faker->dateTimeBetween('-1 year'),
         ];
     }
 }

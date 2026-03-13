@@ -6,6 +6,7 @@ use App\Models\Comment;
 use App\Models\Post;
 use App\Models\Tag;
 use App\Models\User;
+use Faker\Factory as Faker;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
@@ -22,6 +23,8 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        $fake = Faker::create();
+
         $this->command->info('Creating users...');
         $users = User::factory(500)->create();
 
@@ -71,10 +74,10 @@ class DatabaseSeeder extends Seeder
         foreach (range(1, 20000) as $i) {
             $notifications[] = [
                 'user_id' => $userIds->random(),
-                'type' => fake()->randomElement(['comment', 'like', 'follow', 'mention', 'system']),
-                'data' => json_encode(['message' => fake()->sentence()]),
-                'is_read' => fake()->boolean(60),
-                'created_at' => fake()->dateTimeBetween('-6 months', $now),
+                'type' => $fake->randomElement(['comment', 'like', 'follow', 'mention', 'system']),
+                'data' => json_encode(['message' => $fake->sentence()]),
+                'is_read' => $fake->boolean(60),
+                'created_at' => $fake->dateTimeBetween('-6 months', $now),
                 'updated_at' => $now,
             ];
 
@@ -94,11 +97,11 @@ class DatabaseSeeder extends Seeder
         foreach (range(1, 20000) as $i) {
             $activities[] = [
                 'user_id' => $userIds->random(),
-                'action' => fake()->randomElement(['created', 'updated', 'deleted', 'viewed', 'exported']),
-                'subject_type' => fake()->randomElement(['post', 'comment', 'user', 'tag']),
+                'action' => $fake->randomElement(['created', 'updated', 'deleted', 'viewed', 'exported']),
+                'subject_type' => $fake->randomElement(['post', 'comment', 'user', 'tag']),
                 'subject_id' => rand(1, 10000),
-                'properties' => json_encode(['ip' => fake()->ipv4(), 'agent' => fake()->userAgent()]),
-                'created_at' => fake()->dateTimeBetween('-6 months', $now),
+                'properties' => json_encode(['ip' => $fake->ipv4(), 'agent' => $fake->userAgent()]),
+                'created_at' => $fake->dateTimeBetween('-6 months', $now),
                 'updated_at' => $now,
             ];
 
