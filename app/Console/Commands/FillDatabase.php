@@ -19,6 +19,9 @@ class FillDatabase extends Command
         $targetMb = (int) $this->option('target');
         $batchSize = (int) $this->option('batch');
 
+        // Disable binlog for this session to avoid massive binlog growth
+        DB::statement('SET sql_log_bin = 0');
+
         $currentMb = $this->getDatabaseSizeMb();
         $this->info("Current DB size: {$currentMb} MB, target: {$targetMb} MB");
 
