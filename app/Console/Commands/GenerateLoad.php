@@ -26,6 +26,12 @@ class GenerateLoad extends Command
     private int $readCount = 0;
     private int $writeCount = 0;
 
+    // Pre-cached ID ranges for indexed lookups
+    private int $maxPostId = 0;
+    private int $maxCommentId = 0;
+    private int $maxNotificationId = 0;
+    private int $maxActivityLogId = 0;
+
     public function handle(): int
     {
         $this->fake = Faker::create();
@@ -45,9 +51,14 @@ class GenerateLoad extends Command
             return 1;
         }
 
+        // Cache max IDs for range-based indexed lookups
+        $this->maxPostId = Post::max('id') ?? 0;
+        $this->maxCommentId = Comment::max('id') ?? 0;
+        $this->maxNotificationId = Notification::max('id') ?? 0;
+        $this->maxActivityLogId = ActivityLog::max('id') ?? 0;
+
         $startTime = microtime(true);
         $lastReport = $startTime;
-        $iterationQueries = 0;
 
         while (true) {
             $elapsed = microtime(true) - $startTime;
@@ -60,9 +71,9 @@ class GenerateLoad extends Command
             $doWrite = ($this->readCount >= $ratio * max($this->writeCount, 1));
 
             if ($doWrite) {
-                $iterationQueries += $this->doWriteOperation($userIds, $postIds, $tagIds);
+                $this->doWriteOperation($userIds, $postIds, $tagIds);
             } else {
-                $iterationQueries += $this->doReadOperation($userIds, $postIds, $tagIds);
+                $this->doReadOperation($userIds, $postIds, $tagIds);
             }
 
             // Throttle to stay near target QPS
@@ -97,8 +108,7 @@ class GenerateLoad extends Command
     }
 
     /**
-     * Perform a read operation — mirrors typical Laravel app patterns.
-     * Each method represents a "page load" with multiple queries.
+     * Perform a read operation using indexed queries only.
      */
     private function doReadOperation(array $userIds, array $postIds, array $tagIds): int
     {
@@ -110,113 +120,73 @@ class GenerateLoad extends Command
             2 => $this->readPostDetail($postIds),
             3 => $this->readUserProfile($userIds),
             4 => $this->readTagPosts($tagIds),
-            5 => $this->readSearch(),
+            5 => $this->readNotifications($userIds),
         };
     }
 
     /**
-     * Dashboard: aggregations + eager loads (typical admin page).
+     * Dashboard: indexed lookups and scoped aggregations.
      */
     private function readDashboard(array $userIds): int
     {
         $queries = 0;
+        $userId = $userIds[array_rand($userIds)];
 
-        // Total counts
-        Post::where('status', 'published')->count();
+        // Count posts by user (uses user_id index)
+        Post::where('user_id', $userId)->count();
         $queries++;
 
-        Comment::where('is_approved', true)->count();
+        // Count comments by user (uses user_id index)
+        Comment::where('user_id', $userId)->count();
         $queries++;
 
-        User::count();
-        $queries++;
-
-        // Recent activity with joins
-        ActivityLog::with('user')
+        // Recent activity for user (uses [user_id, created_at] index)
+        ActivityLog::where('user_id', $userId)
             ->orderByDesc('created_at')
             ->limit(20)
             ->get();
-        $queries += 2;
-
-        // Posts per day (last 7 days)
-        Post::where('created_at', '>=', now()->subDays(7))
-            ->selectRaw('DATE(created_at) as date, COUNT(*) as count')
-            ->groupByRaw('DATE(created_at)')
-            ->get();
         $queries++;
 
-        // Top commenters
-        Comment::selectRaw('user_id, COUNT(*) as count')
-            ->where('created_at', '>=', now()->subDays(30))
-            ->groupBy('user_id')
-            ->orderByDesc('count')
-            ->limit(10)
-            ->get();
-        $queries++;
-
-        // Unread notifications for a random user
-        Notification::where('user_id', $userIds[array_rand($userIds)])
+        // Unread notifications for user (uses [user_id, is_read] index)
+        Notification::where('user_id', $userId)
             ->where('is_read', false)
             ->orderByDesc('created_at')
             ->limit(10)
             ->get();
         $queries++;
 
+        // Recent posts by status+date (uses [status, published_at] index)
+        Post::where('status', 'published')
+            ->where('published_at', '>=', now()->subDays(7))
+            ->orderByDesc('published_at')
+            ->limit(20)
+            ->get();
+        $queries++;
+
         $this->readCount += $queries;
         return $queries;
     }
 
     /**
-     * Feed: paginated posts with eager-loaded relationships.
+     * Feed: paginated posts using composite index.
      */
     private function readFeed(array $postIds): int
     {
         $queries = 0;
 
-        $posts = Post::with(['user', 'tags', 'comments' => fn ($q) => $q->limit(3)])
+        // Uses [status, published_at] index for ordering + filtering
+        $posts = Post::with(['user', 'tags'])
             ->where('status', 'published')
             ->orderByDesc('published_at')
-            ->offset(rand(0, 100))
             ->limit(15)
             ->get();
-        $queries += 4; // main + 3 eager loads
+        $queries += 3; // main + 2 eager loads
 
-        // Simulate "has more" check
-        Post::where('status', 'published')->count();
-        $queries++;
-
-        $this->readCount += $queries;
-        return $queries;
-    }
-
-    /**
-     * Post detail: single post with all related data.
-     */
-    private function readPostDetail(array $postIds): int
-    {
-        $queries = 0;
-        $postId = $postIds[array_rand($postIds)];
-
-        Post::with(['user', 'tags'])->find($postId);
-        $queries += 3;
-
-        // Comments with pagination
-        Comment::with('user')
-            ->where('post_id', $postId)
-            ->where('is_approved', true)
-            ->orderByDesc('created_at')
-            ->limit(20)
-            ->get();
-        $queries += 2;
-
-        // Related posts (same tags)
-        $tagIds = DB::table('post_tag')->where('post_id', $postId)->pluck('tag_id');
-        $queries++;
-
-        if ($tagIds->isNotEmpty()) {
-            Post::whereHas('tags', fn ($q) => $q->whereIn('tags.id', $tagIds))
-                ->where('id', '!=', $postId)
-                ->where('status', 'published')
+        // Load comments for these posts (uses [post_id, is_approved] index)
+        if ($posts->isNotEmpty()) {
+            Comment::where('post_id', $posts->first()->id)
+                ->where('is_approved', true)
+                ->orderByDesc('created_at')
                 ->limit(5)
                 ->get();
             $queries++;
@@ -227,31 +197,73 @@ class GenerateLoad extends Command
     }
 
     /**
-     * User profile: user data with their posts and stats.
+     * Post detail: PK lookups + indexed comment fetch.
+     */
+    private function readPostDetail(array $postIds): int
+    {
+        $queries = 0;
+        $postId = $postIds[array_rand($postIds)];
+
+        // PK lookup with eager loads
+        Post::with(['user', 'tags'])->find($postId);
+        $queries += 3;
+
+        // Comments for post (uses [post_id, is_approved] index)
+        Comment::where('post_id', $postId)
+            ->where('is_approved', true)
+            ->orderByDesc('created_at')
+            ->limit(20)
+            ->get();
+        $queries++;
+
+        // Tags for post (uses post_tag PK)
+        DB::table('post_tag')->where('post_id', $postId)->pluck('tag_id');
+        $queries++;
+
+        // Another random post by PK
+        Post::find($postIds[array_rand($postIds)]);
+        $queries++;
+
+        $this->readCount += $queries;
+        return $queries;
+    }
+
+    /**
+     * User profile: all queries use user_id indexes.
      */
     private function readUserProfile(array $userIds): int
     {
         $queries = 0;
         $userId = $userIds[array_rand($userIds)];
 
+        // PK lookup
         User::find($userId);
         $queries++;
 
+        // User's posts (uses user_id index)
         Post::where('user_id', $userId)
-            ->where('status', 'published')
             ->orderByDesc('created_at')
             ->limit(10)
             ->get();
         $queries++;
 
-        // Stats
+        // User's post count (uses user_id index)
         Post::where('user_id', $userId)->count();
         $queries++;
 
+        // User's comment count (uses user_id index)
         Comment::where('user_id', $userId)->count();
         $queries++;
 
+        // User's total views (uses user_id index)
         Post::where('user_id', $userId)->sum('views_count');
+        $queries++;
+
+        // User's activity (uses [user_id, created_at] index)
+        ActivityLog::where('user_id', $userId)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get();
         $queries++;
 
         $this->readCount += $queries;
@@ -259,45 +271,73 @@ class GenerateLoad extends Command
     }
 
     /**
-     * Tag posts: filtered listing.
+     * Tag posts: pivot table join instead of whereHas subquery.
      */
     private function readTagPosts(array $tagIds): int
     {
         $queries = 0;
         $tagId = $tagIds[array_rand($tagIds)];
 
+        // PK lookup
         Tag::find($tagId);
         $queries++;
 
-        Post::whereHas('tags', fn ($q) => $q->where('tags.id', $tagId))
-            ->with('user')
-            ->where('status', 'published')
-            ->orderByDesc('published_at')
+        // Get post IDs from pivot (uses post_tag PK [post_id, tag_id])
+        $tagPostIds = DB::table('post_tag')
+            ->where('tag_id', $tagId)
             ->limit(15)
-            ->get();
-        $queries += 2;
+            ->pluck('post_id');
+        $queries++;
+
+        // Fetch posts by PK list (uses PK index)
+        if ($tagPostIds->isNotEmpty()) {
+            Post::with('user')
+                ->whereIn('id', $tagPostIds)
+                ->where('status', 'published')
+                ->get();
+            $queries += 2;
+        }
 
         $this->readCount += $queries;
         return $queries;
     }
 
     /**
-     * Search: LIKE queries on text columns (common and expensive).
+     * Notifications: all queries use [user_id, is_read] index.
+     * Replaces the old readSearch() which used LIKE '%term%' full scans.
      */
-    private function readSearch(): int
+    private function readNotifications(array $userIds): int
     {
         $queries = 0;
-        $term = Str::random(rand(3, 6));
+        $userId = $userIds[array_rand($userIds)];
 
-        Post::where('title', 'like', "%{$term}%")
-            ->orWhere('body', 'like', "%{$term}%")
-            ->where('status', 'published')
-            ->orderByDesc('published_at')
-            ->limit(15)
+        // Unread count (uses [user_id, is_read] index)
+        Notification::where('user_id', $userId)
+            ->where('is_read', false)
+            ->count();
+        $queries++;
+
+        // Recent notifications (uses [user_id, is_read] index)
+        Notification::where('user_id', $userId)
+            ->orderByDesc('created_at')
+            ->limit(20)
             ->get();
         $queries++;
 
-        User::where('name', 'like', "%{$term}%")->limit(5)->get();
+        // Read notifications (uses [user_id, is_read] index)
+        Notification::where('user_id', $userId)
+            ->where('is_read', true)
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get();
+        $queries++;
+
+        // Activity log for user (uses [user_id, created_at] index)
+        ActivityLog::where('user_id', $userId)
+            ->where('action', 'viewed')
+            ->orderByDesc('created_at')
+            ->limit(10)
+            ->get();
         $queries++;
 
         $this->readCount += $queries;
@@ -367,6 +407,7 @@ class GenerateLoad extends Command
     {
         $queries = 0;
 
+        // PK update (uses PK index)
         Post::where('id', $postIds[array_rand($postIds)])
             ->update([
                 'views_count' => DB::raw('views_count + '.rand(1, 10)),
@@ -390,7 +431,7 @@ class GenerateLoad extends Command
         ]);
         $queries++;
 
-        // Also mark some as read (batch update)
+        // Mark some as read (uses [user_id, is_read] index)
         Notification::where('user_id', $userIds[array_rand($userIds)])
             ->where('is_read', false)
             ->limit(5)
@@ -412,12 +453,6 @@ class GenerateLoad extends Command
             'subject_id' => $postIds[array_rand($postIds)],
             'properties' => ['ip' => $this->fake->ipv4()],
         ]);
-        $queries++;
-
-        // Cleanup old logs (typical maintenance pattern)
-        ActivityLog::where('created_at', '<', now()->subMonths(6))
-            ->limit(10)
-            ->delete();
         $queries++;
 
         $this->writeCount += $queries;
