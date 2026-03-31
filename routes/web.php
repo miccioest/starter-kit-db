@@ -28,13 +28,32 @@ Route::get('/status', function () {
 
 Route::get('/health', function () {
     $timings = [];
+    $debug = [];
 
     $redisConn = config('cache.stores.redis.connection', 'default');
+    $debug['pid'] = getmypid();
+    $debug['redis_host'] = config("database.redis.{$redisConn}.host");
+    $debug['persistent'] = config("database.redis.{$redisConn}.persistent", false);
+
     config([
         "database.redis.{$redisConn}.timeout" => 4,
         "database.redis.{$redisConn}.read_timeout" => 4,
     ]);
-    try { Redis::connection($redisConn)->disconnect(); } catch (\Throwable $e) {}
+
+    // Check if there's an existing connection before disconnect
+    try {
+        $client = Redis::connection($redisConn)->client();
+        $debug['pre_disconnect_connected'] = $client->isConnected();
+        if ($client->isConnected()) {
+            $debug['pre_disconnect_server'] = $client->getHost() . ':' . $client->getPort();
+        }
+    } catch (\Throwable $e) {
+        $debug['pre_disconnect_error'] = $e->getMessage();
+    }
+
+    try { Redis::connection($redisConn)->disconnect(); } catch (\Throwable $e) {
+        $debug['disconnect_error'] = $e->getMessage();
+    }
 
     try {
         $t0 = microtime(true);
@@ -44,16 +63,24 @@ Route::get('/health', function () {
         Cache::store('redis')->forget($key);
         $timings['cache_ms'] = round((microtime(true) - $t0) * 1000, 2);
 
+        // Get post-operation connection info
+        try {
+            $client = Redis::connection($redisConn)->client();
+            $debug['post_server'] = $client->getHost() . ':' . $client->getPort();
+        } catch (\Throwable $e) {}
+
         if ($value !== 'ok') {
-            Log::warning('Health check: cache read/write verification failed', $timings);
-            return response()->json(['status' => 'unhealthy', 'failure' => 'cache read/write mismatch', 'timings' => $timings], 503);
+            Log::warning('Health check: cache read/write verification failed', compact('timings', 'debug'));
+            return response()->json(['status' => 'unhealthy', 'failure' => 'cache read/write mismatch', 'timings' => $timings, 'debug' => $debug], 503);
         }
 
-        Log::info('Health check healthy', $timings);
-        return response()->json(['status' => 'healthy', 'timings' => $timings], 200);
+        Log::info('Health check healthy', compact('timings', 'debug'));
+        return response()->json(['status' => 'healthy', 'timings' => $timings, 'debug' => $debug], 200);
     } catch (\Exception $e) {
         $timings['cache_ms'] = round((microtime(true) - $t0) * 1000, 2);
-        Log::warning('Health check unhealthy', ['error' => $e->getMessage(), 'timings' => $timings]);
-        return response()->json(['status' => 'unhealthy', 'failure' => $e->getMessage(), 'timings' => $timings], 503);
+        $debug['error_class'] = get_class($e);
+        $debug['error_trace'] = array_slice(explode("\n", $e->getTraceAsString()), 0, 5);
+        Log::warning('Health check unhealthy', compact('timings', 'debug'));
+        return response()->json(['status' => 'unhealthy', 'failure' => $e->getMessage(), 'timings' => $timings, 'debug' => $debug], 503);
     }
 });
