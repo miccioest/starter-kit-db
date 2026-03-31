@@ -33,7 +33,7 @@ Route::get('/health', function () {
     $redisConn = config('cache.stores.redis.connection', 'default');
     $debug['pid'] = getmypid();
     $debug['redis_host'] = config("database.redis.{$redisConn}.host");
-    $debug['persistent'] = config("database.redis.{$redisConn}.persistent", false);
+    $debug['persistent'] = config("database.redis.options.persistent", false);
 
     config([
         "database.redis.{$redisConn}.timeout" => 4,
