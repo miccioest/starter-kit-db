@@ -87,11 +87,12 @@ class GenerateLoad extends Command
             // Report every 10 seconds
             $now = microtime(true);
             if ($now - $lastReport >= 10) {
-                $actualQps = $totalQueries / $elapsed;
+                $elapsedNow = $now - $startTime;
+                $actualQps = $elapsedNow > 0 ? $totalQueries / $elapsedNow : 0;
                 $actualRatio = $this->writeCount > 0 ? round($this->readCount / $this->writeCount, 1) : 'inf';
                 $this->line(sprintf(
                     '[%.0fs] QPS: %.0f (target: %d) | reads: %d, writes: %d, ratio: %s:1',
-                    $elapsed, $actualQps, $targetQps, $this->readCount, $this->writeCount, $actualRatio
+                    $elapsedNow, $actualQps, $targetQps, $this->readCount, $this->writeCount, $actualRatio
                 ));
                 $lastReport = $now;
             }
@@ -99,9 +100,10 @@ class GenerateLoad extends Command
 
         $elapsed = microtime(true) - $startTime;
         $totalQueries = $this->readCount + $this->writeCount;
+        $finalQps = $elapsed > 0 ? $totalQueries / $elapsed : 0;
         $this->info(sprintf(
             'Done. %d queries in %.1fs (%.0f QPS). Reads: %d, Writes: %d',
-            $totalQueries, $elapsed, $totalQueries / $elapsed, $this->readCount, $this->writeCount
+            $totalQueries, $elapsed, $finalQps, $this->readCount, $this->writeCount
         ));
 
         return 0;
